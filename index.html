@@ -741,11 +741,14 @@ function capturarGPS() {
 // ============================================================
 async function carregarRegistros() {
   const lista = document.getElementById("lista");
-  lista.innerHTML = "<small>⏳ Carregando todos os registros do Supabase...</small>";
+  const contador = document.getElementById("contador");
+
+  lista.innerHTML = "<small>⏳ Carregando registros do Supabase...</small>";
+  contador.textContent = "0";
 
   try {
-    // O Supabase/PostgREST normalmente limita uma consulta a 1000 linhas.
-    // Por isso carregamos em páginas de 1000 até buscar tudo.
+    // PostgREST pode limitar uma resposta a 1000 linhas.
+    // Busca páginas sucessivas até terminar.
     const TAMANHO_PAGINA = 1000;
     let todos = [];
     let inicio = 0;
@@ -757,27 +760,51 @@ async function carregarRegistros() {
         .order("id", { ascending: false })
         .range(inicio, inicio + TAMANHO_PAGINA - 1);
 
-      if (error) throw error;
+      if (error) {
+        console.error("Erro ao consultar bocas_de_lobo:", error);
+        throw new Error(
+          (error.message || "Erro desconhecido") +
+          (error.details ? "\nDetalhes: " + error.details : "") +
+          (error.hint ? "\nDica: " + error.hint : "")
+        );
+      }
 
-      const pagina = data || [];
+      const pagina = Array.isArray(data) ? data : [];
       todos = todos.concat(pagina);
 
       if (pagina.length < TAMANHO_PAGINA) break;
-
       inicio += TAMANHO_PAGINA;
     }
 
     registros = todos.map(normalizarRegistro);
 
-  // Remove marcadores antigos dos registros sem mexer no marcador GPS.
-  map.eachLayer(layer => {
-    if (layer instanceof L.Marker && layer !== gpsMarker) {
-      map.removeLayer(layer);
-    }
-  });
+    // Remove marcadores antigos dos registros sem mexer no marcador GPS.
+    map.eachLayer(layer => {
+      if (layer instanceof L.Marker && layer !== gpsMarker) {
+        map.removeLayer(layer);
+      }
+    });
 
-  registros.forEach(adicionarMarcador);
-  renderizarRegistros();
+    registros.forEach(adicionarMarcador);
+    renderizarRegistros();
+
+    console.log("Supabase: registros carregados =", registros.length);
+
+  } catch (erro) {
+    console.error("Falha ao carregar bocas_de_lobo:", erro);
+
+    contador.textContent = "0";
+    lista.innerHTML =
+      "<div style='padding:12px;border:1px solid #f0b7b2;background:#fff4f2;border-radius:10px;color:#8b1e16'>" +
+      "<strong>❌ Não foi possível consultar o Supabase.</strong><br><br>" +
+      escapeHtml(erro.message || String(erro)) +
+      "<br><br>" +
+      "<strong>Verifique no Supabase:</strong><br>" +
+      "1. se a tabela é <code>public.bocas_de_lobo</code>;<br>" +
+      "2. se existe uma política RLS permitindo <strong>SELECT</strong> para o usuário público (anon);<br>" +
+      "3. se a URL/chave pública deste HTML pertencem ao mesmo projeto onde estão os 2.800+ registros." +
+      "</div>";
+  }
 }
 
 function normalizarRegistro(r) {
@@ -1092,7 +1119,7 @@ function escapeHtml(texto) {
     .replace(/'/g,"&#039;");
 }
 
-renderizarRegistros();
+// A listagem será preenchida por carregarRegistros() após a página carregar.
 </script>
 
 </body>
