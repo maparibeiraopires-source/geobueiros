@@ -741,23 +741,33 @@ function capturarGPS() {
 // ============================================================
 async function carregarRegistros() {
   const lista = document.getElementById("lista");
-  lista.innerHTML = "<small>⏳ Carregando registros do Supabase...</small>";
+  lista.innerHTML = "<small>⏳ Carregando todos os registros do Supabase...</small>";
 
-  const { data, error } = await supabaseClient
-    .from("bocas_de_lobo")
-    .select("*")
-    .order("id", { ascending: false });
+  try {
+    // O Supabase/PostgREST normalmente limita uma consulta a 1000 linhas.
+    // Por isso carregamos em páginas de 1000 até buscar tudo.
+    const TAMANHO_PAGINA = 1000;
+    let todos = [];
+    let inicio = 0;
 
-  if (error) {
-    console.error("Erro ao carregar Supabase:", error);
-    lista.innerHTML =
-      "<small style='color:#b42318'>❌ Erro ao carregar o Supabase: " +
-      escapeHtml(error.message) + "</small>";
-    document.getElementById("contador").textContent = "0";
-    return;
-  }
+    while (true) {
+      const { data, error } = await supabaseClient
+        .from("bocas_de_lobo")
+        .select("*")
+        .order("id", { ascending: false })
+        .range(inicio, inicio + TAMANHO_PAGINA - 1);
 
-  registros = (data || []).map(normalizarRegistro);
+      if (error) throw error;
+
+      const pagina = data || [];
+      todos = todos.concat(pagina);
+
+      if (pagina.length < TAMANHO_PAGINA) break;
+
+      inicio += TAMANHO_PAGINA;
+    }
+
+    registros = todos.map(normalizarRegistro);
 
   // Remove marcadores antigos dos registros sem mexer no marcador GPS.
   map.eachLayer(layer => {
@@ -844,6 +854,38 @@ async function salvarRegistro() {
 
   if (error) {
     console.error("Erro ao salvar:", error);
+
+    // Se duas pessoas salvarem ao mesmo tempo, pode haver colisão de código.
+    // Tenta gerar outro código uma vez e repetir o INSERT.
+    if (
+      String(error.message || "").toLowerCase().includes("duplicate key") &&
+      String(error.message || "").toLowerCase().includes("codigo")
+    ) {
+      const novoId = await gerarID(tipo);
+
+      if (novoId && novoId !== id) {
+        payload.codigo = novoId;
+
+        const tentativa2 = await supabaseClient
+          .from("bocas_de_lobo")
+          .insert(payload)
+          .select("*")
+          .single();
+
+        if (!tentativa2.error) {
+          const registro2 = normalizarRegistro(tentativa2.data);
+          registros.unshift(registro2);
+          adicionarMarcador(registro2);
+          renderizarRegistros();
+          alert("✅ Cadastro salvo com sucesso: " + registro2.id);
+          limparFormulario();
+          return;
+        }
+
+        console.error("Segunda tentativa de salvamento falhou:", tentativa2.error);
+      }
+    }
+
     alert("❌ Não foi possível salvar no Supabase.\n\n" + error.message);
     return;
   }
@@ -861,24 +903,37 @@ async function salvarRegistro() {
 async function gerarID(tipo) {
   const prefixo = tipo === "Boca de Lobo" ? "BL" : "CL";
 
+  // NÃO buscamos todos os códigos.
+  // A consulta antiga podia retornar somente os primeiros 1000 registros,
+  // fazendo o sistema calcular um código que já existia.
+  //
+  // Como os códigos são preenchidos com zeros (BL-00001, BL-00002...),
+  // ordenar "codigo" de forma decrescente permite pegar diretamente
+  // o maior código daquele tipo.
   const { data, error } = await supabaseClient
     .from("bocas_de_lobo")
     .select("codigo")
-    .like("codigo", prefixo + "-%");
+    .like("codigo", prefixo + "-%")
+    .order("codigo", { ascending: false })
+    .limit(1);
 
   if (error) {
     console.error("Erro ao gerar código:", error);
-    alert("❌ Não foi possível consultar os códigos existentes.\n\n" + error.message);
+    alert("❌ Não foi possível consultar o último código existente.\n\n" + error.message);
     return null;
   }
 
-  const existentes = (data || [])
-    .map(r => String(r.codigo || ""))
-    .filter(c => c.startsWith(prefixo + "-"))
-    .map(c => parseInt(c.split("-")[1], 10) || 0);
+  let ultimo = 0;
 
-  const proximo = (existentes.length ? Math.max(...existentes) : 0) + 1;
-  return prefixo + "-" + String(proximo).padStart(5, "0");
+  if (data && data.length) {
+    const codigoAtual = String(data[0].codigo || "");
+    const numeroAtual = parseInt(codigoAtual.split("-")[1], 10);
+    if (Number.isFinite(numeroAtual)) {
+      ultimo = numeroAtual;
+    }
+  }
+
+  return prefixo + "-" + String(ultimo + 1).padStart(5, "0");
 }
 
 function limparFormulario() {
